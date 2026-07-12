@@ -8,6 +8,7 @@ import {
   EXPANDED_SCHEDULE_START,
   hasApproximateDateConflict,
   hashString,
+  matchesDailyEventSet,
   shuffled,
 } from "./daily-schedule";
 import { EVENTS, PRACTICE_PACKS, type EventItem } from "./events";
@@ -57,6 +58,11 @@ const PROFILE_KEY = "when.profile.v1";
 const SOUND_KEY = "when.sound.v1";
 const GAME_KEY_PREFIX = "when.daily.v1.";
 const TOTAL_PLACEMENTS = 8;
+const EXPANDED_SCHEDULE_LABEL = new Intl.DateTimeFormat("en-NZ", {
+  day: "numeric",
+  month: "long",
+  timeZone: "UTC",
+}).format(new Date(`${EXPANDED_SCHEDULE_START}T00:00:00.000Z`));
 const EMPTY_PROFILE: Profile = {
   streak: 0,
   bestStreak: 0,
@@ -158,6 +164,7 @@ function normalizeGame(value: unknown): GameState | null {
   if (new Set(game.queue).size !== game.queue.length || new Set(game.timeline).size !== game.timeline.length) return null;
   if (!game.timeline.every((id) => typeof id === "string" && EVENT_BY_ID.has(id))) return null;
   if (!game.queue.every((id) => typeof id === "string" && EVENT_BY_ID.has(id))) return null;
+  if (game.mode === "daily" && !matchesDailyEventSet(game.dateKey, [...game.timeline, ...game.queue])) return null;
   if (!game.outcomes.every((outcome) => outcome === "correct" || outcome === "wrong")) return null;
   if (!Number.isInteger(game.roundIndex) || game.roundIndex < 0 || game.roundIndex > TOTAL_PLACEMENTS) return null;
   if (game.outcomes.length !== game.roundIndex || game.timeline.length !== game.roundIndex + 2) return null;
@@ -350,7 +357,7 @@ export default function Game() {
   const promptRegionRef = useRef<HTMLElement | null>(null);
   const resultsHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
-  const [dateKey, setDateKey] = useState(() => localDateKey());
+  const [dateKey] = useState(() => localDateKey());
   const puzzleNumber = useMemo(() => dailyNumber(dateKey), [dateKey]);
   const playSound = useGameSound(soundEnabled);
   const currentVisibleStreak = visibleStreak(profile, dateKey);
@@ -445,13 +452,7 @@ export default function Game() {
     const checkForNewDay = () => {
       const today = localDateKey();
       if (today === dateKey) return;
-      const stored = normalizeGame(readJson<unknown>(`${GAME_KEY_PREFIX}${today}`, null));
-      setDateKey(today);
-      setDailyProgress(stored);
-      setGame(null);
-      setScreen("home");
-      setModal(null);
-      window.scrollTo({ top: 0, behavior: "instant" });
+      window.location.reload();
     };
     const now = new Date();
     const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
@@ -817,7 +818,7 @@ export default function Game() {
         <p className="home-footnote">
           {expandedDailyActive
             ? `A new shared puzzle appears at midnight. ${EVENTS.length} moments · 60-day cooldown · no account.`
-            : `${EVENTS.length} moments join the daily rotation on 16 July. Practice them now · no account.`}
+            : `${EVENTS.length} moments join the daily rotation on ${EXPANDED_SCHEDULE_LABEL}. Practice them now · no account.`}
         </p>
       </main>
     );
@@ -1102,7 +1103,9 @@ export default function Game() {
             <div className="same-year-note"><strong>✦ Same-year rule</strong><span>If two events share a year, either side counts. We’re curious, not cruel.</span></div>
             <p className="modal-footnote">
               Two mistakes end the run. Everyone gets the same daily puzzle
-              {expandedDailyActive ? ", with a 60-day event cooldown." : "; the expanded cooldown begins on 16 July."}
+              {expandedDailyActive
+                ? ", with a 60-day event cooldown."
+                : `; the expanded cooldown begins on ${EXPANDED_SCHEDULE_LABEL}.`}
             </p>
             <button className="primary-button dark" onClick={closeModal}>Got it</button>
           </section>

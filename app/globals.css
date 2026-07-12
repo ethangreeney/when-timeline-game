@@ -582,6 +582,10 @@ button:disabled {
   background: var(--coral);
 }
 
+.feedback-card > .eyebrow {
+  margin-top: 14px;
+}
+
 .feedback-card.has-comparison .feedback-symbol {
   margin-bottom: 18px;
 }
@@ -1339,6 +1343,10 @@ button:disabled {
     right: 20px;
     width: 50px;
     height: 50px;
+  }
+
+  .feedback-card > .eyebrow {
+    padding-inline-end: 72px;
   }
 
   .feedback-card h2 {

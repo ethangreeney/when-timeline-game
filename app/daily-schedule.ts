@@ -8,10 +8,10 @@ import {
 
 export const DAILY_EVENT_COUNT = 10;
 export const NO_REPEAT_DAYS = 60;
-export const EXPANDED_SCHEDULE_START = "2026-07-16";
+export const EXPANDED_SCHEDULE_START = "2026-07-13";
 
 const DAY_MS = 86_400_000;
-const EXPANDED_START_MS = Date.UTC(2026, 6, 16);
+const EXPANDED_START_MS = Date.parse(`${EXPANDED_SCHEDULE_START}T00:00:00.000Z`);
 const MANIFEST_DAY_WIDTH = DAILY_EVENT_COUNT * 2;
 const EVENT_BY_ID = new Map(EVENTS.map((event) => [event.id, event]));
 
@@ -335,4 +335,10 @@ export function dailyEvents(dateKey: string) {
     throw new Error("Daily manifest start does not match the expanded schedule start.");
   }
   return manifestedDailyEvents(dayIndex) ?? [...expandedDailyEvents(dayIndex)];
+}
+
+export function matchesDailyEventSet(dateKey: string, eventIds: Iterable<string>) {
+  const expectedIds = new Set(dailyEvents(dateKey).map((event) => event.id));
+  const savedIds = new Set(eventIds);
+  return savedIds.size === expectedIds.size && [...expectedIds].every((id) => savedIds.has(id));
 }

@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { dailyEvents, dailyFactIndex, EXPANDED_SCHEDULE_START, NO_REPEAT_DAYS } from "../app/daily-schedule";
+import {
+  dailyEvents,
+  dailyFactIndex,
+  EXPANDED_SCHEDULE_START,
+  matchesDailyEventSet,
+  NO_REPEAT_DAYS,
+} from "../app/daily-schedule";
 import { DAILY_MANIFEST_DAYS } from "../app/event-data/daily-manifest";
 import { EVENTS, PRACTICE_PACKS } from "../app/events";
 
@@ -78,6 +84,30 @@ for (const [dateKey, expected] of Object.entries(LEGACY_SNAPSHOTS)) {
     `Legacy daily puzzle changed for ${dateKey}.`,
   );
 }
+
+assert.equal(EXPANDED_SCHEDULE_START, "2026-07-13", "Published expanded-schedule cutover changed.");
+const finalLegacyIds = new Set(dailyEvents("2026-07-12").map((event) => event.id));
+assert.deepEqual(
+  dailyEvents(EXPANDED_SCHEDULE_START)
+    .map((event) => event.id)
+    .filter((eventId) => finalLegacyIds.has(eventId)),
+  [],
+  "The first protected daily puzzle repeats an event from the final legacy puzzle.",
+);
+assert.equal(
+  matchesDailyEventSet("2026-07-13", [
+    "moon-landing", "arpanet", "frankenstein-published", "alice-wonderland",
+    "dna-double-helix", "first-sms", "youtube-launch", "netflix-streaming",
+    "copernicus-revolutions", "hamilton-broadway",
+  ]),
+  false,
+  "The replaced 13 July puzzle must be rejected as stale saved progress.",
+);
+assert.equal(
+  matchesDailyEventSet("2026-07-13", dailyEvents("2026-07-13").map((event) => event.id)),
+  true,
+  "The corrected 13 July puzzle must remain valid saved progress.",
+);
 
 const lastSeen = new Map<string, number>();
 const exposureCounts = new Map(EVENTS.map((event) => [event.id, 0]));
