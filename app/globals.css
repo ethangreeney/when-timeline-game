@@ -59,9 +59,25 @@ button:disabled {
   opacity: 0.6;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  margin: -1px;
+  white-space: nowrap;
+}
+
 .app-shell {
   min-height: 100vh;
   overflow: clip;
+}
+
+.page-content {
+  min-height: calc(100vh - 76px);
 }
 
 .site-header {
@@ -75,8 +91,7 @@ button:disabled {
   height: 76px;
   padding: 0 32px;
   border-bottom: var(--border);
-  background: rgba(247, 241, 229, 0.94);
-  backdrop-filter: blur(14px);
+  background: var(--cream);
 }
 
 .brand-button {
@@ -111,8 +126,8 @@ button:disabled {
 
 .icon-button {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   place-items: center;
   border: 2px solid var(--ink);
@@ -208,7 +223,7 @@ button:disabled {
 .daily-card {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(330px, 0.72fr);
+  grid-template-columns: minmax(360px, 0.9fr) minmax(330px, 1.1fr);
   align-items: center;
   min-height: 350px;
   padding: 48px;
@@ -250,7 +265,11 @@ button:disabled {
   line-height: 0.98;
 }
 
-.daily-card > p {
+.daily-copy {
+  min-width: 0;
+}
+
+.daily-copy > p {
   margin: 0 0 28px;
   font-size: 16px;
   font-weight: 720;
@@ -382,7 +401,10 @@ button:disabled {
 }
 
 .text-button {
+  display: inline-flex;
   width: max-content;
+  min-height: 44px;
+  align-items: center;
   padding: 7px 4px;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -413,6 +435,18 @@ button:disabled {
   gap: 5px;
   font-size: 25px;
   line-height: 1;
+}
+
+.for-fun-badge {
+  justify-self: end;
+  padding: 7px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--purple);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
 }
 
 .lives .alive {
@@ -547,6 +581,10 @@ button:disabled {
   background: var(--coral);
 }
 
+.feedback-card.has-comparison .feedback-symbol {
+  margin-bottom: 18px;
+}
+
 .feedback-symbol {
   display: grid;
   width: 65px;
@@ -602,6 +640,48 @@ button:disabled {
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.mistake-feedback {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 18px;
+}
+
+.mistake-feedback > div {
+  display: grid;
+  grid-template-columns: 78px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 7px 9px;
+  border: 2px solid var(--ink);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.44);
+}
+
+.mistake-feedback span {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.mistake-feedback strong {
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.mistake-feedback p {
+  width: max-content;
+  max-width: 100%;
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: white;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  font-weight: 850;
 }
 
 .feedback-card .primary-button {
@@ -724,7 +804,7 @@ button:disabled {
   position: relative;
   display: flex;
   width: 100%;
-  height: 46px;
+  height: 50px;
   align-items: center;
   justify-content: center;
   gap: 7px;
@@ -738,7 +818,7 @@ button:disabled {
   font-weight: 850;
   letter-spacing: 0.06em;
   cursor: pointer;
-  transition: height 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
 }
 
 .gap-button span {
@@ -747,10 +827,10 @@ button:disabled {
 
 .gap-button:hover,
 .gap-button:focus-visible {
-  height: 58px;
   border-color: var(--ink);
   background: var(--yellow);
   color: var(--ink);
+  transform: translateX(2px);
 }
 
 .color-yellow { background: var(--yellow); }
@@ -899,6 +979,37 @@ button:disabled {
   font-weight: 700;
 }
 
+.collision-recap {
+  display: flex;
+  max-width: 570px;
+  align-items: center;
+  gap: 11px;
+  margin: -10px auto 28px;
+  padding: 13px 15px;
+  border: 2px solid var(--ink);
+  border-radius: 13px;
+  background: var(--yellow);
+  text-align: left;
+}
+
+.collision-recap > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--paper);
+  font-size: 17px;
+}
+
+.collision-recap p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .result-actions,
 .after-actions {
   display: flex;
@@ -944,8 +1055,8 @@ button:disabled {
   top: 18px;
   right: 18px;
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   place-items: center;
   border: 2px solid var(--ink);
@@ -1155,7 +1266,7 @@ button:disabled {
   to { transform: translateX(100%); }
 }
 
-@media (max-width: 880px) {
+@media (max-width: 920px) {
   .home-page,
   .results-page,
   .game-page {
@@ -1251,6 +1362,16 @@ button:disabled {
     bottom: 20px;
     width: max-content;
   }
+
+  .feedback-card.has-comparison {
+    min-height: 390px;
+  }
+
+  .feedback-card.has-comparison .primary-button {
+    position: static;
+    width: 100%;
+    margin-top: auto;
+  }
 }
 
 @media (max-width: 620px) {
@@ -1301,6 +1422,10 @@ button:disabled {
   .daily-card h2 {
     margin-top: 10px;
     font-size: 37px;
+  }
+
+  .daily-copy > p {
+    margin-bottom: 20px;
   }
 
   .daily-card .primary-button {
@@ -1408,6 +1533,7 @@ button:disabled {
   .feedback-card h2 { font-size: 25px; }
   .reveal-year { font-size: 34px; }
   .feedback-card { min-height: 310px; }
+  .feedback-card.has-comparison { min-height: 410px; }
   .feedback-card h3 { max-width: calc(100% - 62px); font-size: 15px; }
   .reveal-fact { max-width: 100%; font-size: 12px; line-height: 1.35; }
   .feedback-card .primary-button {
@@ -1478,12 +1604,133 @@ button:disabled {
   .result-actions .primary-button,
   .result-actions .secondary-button { width: 100%; }
 
-  .modal-backdrop { padding: 12px; }
+  .modal-backdrop {
+    padding: 12px;
+    place-items: start center;
+  }
   .modal-card { padding: 28px 18px; border-radius: 18px; }
   .modal-card h2 { margin-top: 5px; font-size: 37px; }
+  .modal-close {
+    position: sticky;
+    z-index: 2;
+    top: 0;
+    float: right;
+    margin-top: -12px;
+    background: var(--paper);
+  }
   .same-year-note { flex-direction: column; }
   .pack-grid { grid-template-columns: 1fr; }
-  .pack-card { min-height: 155px; }
+  .pack-card { min-height: 140px; padding: 17px; }
+}
+
+@media (min-width: 921px) and (max-height: 800px) {
+  .home-page {
+    padding-top: 30px;
+  }
+
+  .hero-copy {
+    margin-bottom: 25px;
+  }
+
+  .hero-copy h1 {
+    font-size: clamp(62px, 6.3vw, 84px);
+  }
+
+  .hero-lede {
+    margin-top: 16px;
+    font-size: 18px;
+  }
+
+  .daily-card {
+    min-height: 290px;
+    padding: 38px 44px 32px;
+  }
+
+  .daily-card h2 {
+    margin-top: 22px;
+    font-size: clamp(36px, 3.5vw, 49px);
+  }
+
+  .daily-illustration {
+    min-height: 175px;
+  }
+
+  .mini-card {
+    width: 82px;
+    height: 102px;
+  }
+
+  .mini-two {
+    width: 94px;
+    height: 120px;
+  }
+
+  .prompt-card,
+  .feedback-card {
+    min-height: 470px;
+    padding: 24px;
+  }
+
+  .prompt-column {
+    position: static;
+  }
+
+  .feedback-card.has-comparison {
+    min-height: 0;
+  }
+
+  .feedback-card.has-comparison .feedback-symbol {
+    width: 52px;
+    height: 52px;
+    margin-bottom: 12px;
+    font-size: 24px;
+  }
+
+  .feedback-card.has-comparison h2 {
+    font-size: 34px;
+  }
+
+  .feedback-card.has-comparison .reveal-year {
+    font-size: 44px;
+  }
+
+  .feedback-card.has-comparison h3 {
+    margin-bottom: 8px;
+    font-size: 18px;
+  }
+
+  .feedback-card.has-comparison .reveal-fact {
+    margin-bottom: 10px;
+    font-size: 14px;
+    line-height: 1.35;
+  }
+
+  .feedback-card.has-comparison .mistake-feedback {
+    gap: 5px;
+    margin-bottom: 12px;
+  }
+}
+
+@media (max-width: 620px) and (max-height: 820px) {
+  .home-page {
+    padding-top: 24px;
+  }
+
+  .hero-copy {
+    margin-bottom: 22px;
+  }
+
+  .hero-copy h1 {
+    font-size: clamp(45px, 15vw, 59px);
+  }
+
+  .hero-lede {
+    margin-top: 14px;
+  }
+
+  .daily-illustration {
+    min-height: 112px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

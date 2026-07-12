@@ -29,7 +29,10 @@ type GameState = {
   feedback?: Feedback;
   startedAt: number;
   endedAt?: number;
+  updatedAt: number;
   streakApplied?: boolean;
+  feedbackAcknowledged?: boolean;
+  afterparty?: boolean;
 };
 
 type Profile = {
@@ -169,6 +172,7 @@ function makeRun(
     seed + 7_777,
   );
 
+  const now = currentTimestamp();
   return {
     mode,
     packId,
@@ -180,7 +184,8 @@ function makeRun(
     lives: 2,
     outcomes: [],
     status: "playing",
-    startedAt: Date.now(),
+    startedAt: now,
+    updatedAt: now,
   };
 }
 
@@ -188,20 +193,61 @@ function getEvent(id: string) {
   return EVENT_BY_ID.get(id)!;
 }
 
-function isValidGame(value: unknown): value is GameState {
-  if (!value || typeof value !== "object") return false;
+function normalizeGame(value: unknown): GameState | null {
+  if (!value || typeof value !== "object") return null;
   const game = value as GameState;
-  return (
-    (game.mode === "daily" || game.mode === "practice") &&
-    Array.isArray(game.timeline) &&
-    Array.isArray(game.queue) &&
-    game.timeline.every((id) => EVENT_BY_ID.has(id)) &&
-    game.queue.every((id) => EVENT_BY_ID.has(id)) &&
-    typeof game.roundIndex === "number" &&
-    game.roundIndex >= 0 &&
-    game.roundIndex <= game.queue.length &&
-    ["playing", "feedback", "complete", "lost"].includes(game.status)
-  );
+  if (game.mode !== "daily" && game.mode !== "practice") return null;
+  if (!Array.isArray(game.timeline) || !Array.isArray(game.queue) || !Array.isArray(game.outcomes)) return null;
+  if (game.queue.length !== TOTAL_PLACEMENTS) return null;
+  if (new Set(game.queue).size !== game.queue.length || new Set(game.timeline).size !== game.timeline.length) return null;
+  if (!game.timeline.every((id) => typeof id === "string" && EVENT_BY_ID.has(id))) return null;
+  if (!game.queue.every((id) => typeof id === "string" && EVENT_BY_ID.has(id))) return null;
+  if (!game.outcomes.every((outcome) => outcome === "correct" || outcome === "wrong")) return null;
+  if (!Number.isInteger(game.roundIndex) || game.roundIndex < 0 || game.roundIndex > TOTAL_PLACEMENTS) return null;
+  if (game.outcomes.length !== game.roundIndex || game.timeline.length !== game.roundIndex + 2) return null;
+  if (!Number.isInteger(game.lives) || game.lives < 0 || game.lives > 2) return null;
+  if (!["playing", "feedback", "complete", "lost"].includes(game.status)) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(game.dateKey) || !Number.isInteger(game.puzzleNumber)) return null;
+  if (typeof game.startedAt !== "number" || !Number.isFinite(game.startedAt)) return null;
+  const timelineYears = game.timeline.map((id) => getEvent(id).year);
+  if (timelineYears.some((year, index) => index > 0 && timelineYears[index - 1] > year)) return null;
+  if (game.status === "playing" && (game.roundIndex >= TOTAL_PLACEMENTS || game.feedback)) return null;
+  if (game.status === "feedback" && (game.roundIndex === 0 || game.roundIndex >= TOTAL_PLACEMENTS || !game.feedback)) return null;
+  if (game.status === "complete" && (game.roundIndex !== TOTAL_PLACEMENTS || !game.feedback)) return null;
+  if (game.status === "lost" && (game.lives !== 0 || !game.feedback)) return null;
+  if (game.feedback) {
+    if (!EVENT_BY_ID.has(game.feedback.eventId)) return null;
+    if (game.feedback.eventId !== game.queue[game.roundIndex - 1]) return null;
+    if (!Number.isInteger(game.feedback.actualIndex) || !Number.isInteger(game.feedback.selectedIndex)) return null;
+    if (game.feedback.actualIndex < 0 || game.feedback.actualIndex > game.timeline.length - 1) return null;
+    if (game.feedback.selectedIndex < 0 || game.feedback.selectedIndex > game.timeline.length - 1) return null;
+    if (typeof game.feedback.correct !== "boolean" || typeof game.feedback.sameYear !== "boolean") return null;
+  }
+
+  return {
+    ...game,
+    updatedAt:
+      typeof game.updatedAt === "number" && Number.isFinite(game.updatedAt)
+        ? game.updatedAt
+        : game.endedAt ?? game.startedAt,
+  };
+}
+
+function normalizeProfile(value: unknown): Profile {
+  if (!value || typeof value !== "object") return { ...EMPTY_PROFILE };
+  const profile = value as Profile;
+  if (
+    !Number.isInteger(profile.streak) ||
+    profile.streak < 0 ||
+    !Number.isInteger(profile.bestStreak) ||
+    profile.bestStreak < 0 ||
+    !Number.isInteger(profile.totalRuns) ||
+    profile.totalRuns < 0 ||
+    (profile.lastPlayedDate !== null && typeof profile.lastPlayedDate !== "string")
+  ) {
+    return { ...EMPTY_PROFILE };
+  }
+  return profile;
 }
 
 function readJson<T>(key: string, fallback: T): T {
@@ -237,6 +283,12 @@ function updateProfile(profile: Profile, dateKey: string) {
     totalRuns: profile.totalRuns + 1,
     lastPlayedDate: dateKey,
   };
+}
+
+function visibleStreak(profile: Profile, dateKey: string) {
+  return profile.lastPlayedDate === dateKey || profile.lastPlayedDate === previousDateKey(dateKey)
+    ? profile.streak
+    : 0;
 }
 
 function formatGap(timeline: EventItem[], index: number) {
@@ -314,21 +366,34 @@ export default function Game() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [modal, setModal] = useState<"how" | "packs" | null>(null);
   const [shareLabel, setShareLabel] = useState("Copy result");
-  const [challengeVisit, setChallengeVisit] = useState(false);
+  const [challengeDate, setChallengeDate] = useState<string | null>(null);
+  const [challengeScore, setChallengeScore] = useState<number | null>(null);
   const interactionLocked = useRef(false);
+  const modalRef = useRef<HTMLElement | null>(null);
+  const modalCloseRef = useRef<HTMLButtonElement | null>(null);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
+  const restoreModalFocusRef = useRef(true);
+  const promptRegionRef = useRef<HTMLElement | null>(null);
+  const resultsHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
-  const dateKey = useMemo(() => localDateKey(), []);
+  const [dateKey, setDateKey] = useState(() => localDateKey());
   const puzzleNumber = useMemo(() => dailyNumber(dateKey), [dateKey]);
   const playSound = useGameSound(soundEnabled);
+  const currentVisibleStreak = visibleStreak(profile, dateKey);
 
   useEffect(() => {
     const hydration = window.setTimeout(() => {
       const stored = readJson<GameState | null>(`${GAME_KEY_PREFIX}${dateKey}`, null);
-      const nextProgress = isValidGame(stored) ? stored : null;
+      const nextProgress = normalizeGame(stored);
+      const params = new URLSearchParams(window.location.search);
+      const sharedDate = params.get("challenge");
+      const sharedScoreValue = params.get("score");
+      const sharedScore = sharedScoreValue === null ? Number.NaN : Number(sharedScoreValue);
       setDailyProgress(nextProgress);
-      setProfile(readJson<Profile>(PROFILE_KEY, EMPTY_PROFILE));
-      setSoundEnabled(readJson<boolean>(SOUND_KEY, true));
-      setChallengeVisit(new URLSearchParams(window.location.search).get("challenge") === "daily");
+      setProfile(normalizeProfile(readJson<unknown>(PROFILE_KEY, EMPTY_PROFILE)));
+      setSoundEnabled(readJson<unknown>(SOUND_KEY, true) !== false);
+      setChallengeDate(sharedDate === "daily" ? dateKey : sharedDate);
+      setChallengeScore(Number.isInteger(sharedScore) && sharedScore >= 0 && sharedScore <= TOTAL_PLACEMENTS ? sharedScore : null);
       setMounted(true);
     }, 0);
     return () => window.clearTimeout(hydration);
@@ -336,22 +401,134 @@ export default function Game() {
 
   useEffect(() => {
     if (!mounted || !game || game.mode !== "daily") return;
-    writeJson(`${GAME_KEY_PREFIX}${dateKey}`, game);
-  }, [dateKey, game, mounted]);
+    writeJson(`${GAME_KEY_PREFIX}${game.dateKey}`, game);
+  }, [game, mounted]);
 
   useEffect(() => {
     if (!modal) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setModal(null);
+    const backgrounds = [...document.querySelectorAll<HTMLElement>("[data-app-background]")];
+    const previousOverflow = document.body.style.overflow;
+    backgrounds.forEach((element) => {
+      element.inert = true;
+      element.setAttribute("aria-hidden", "true");
+    });
+    document.body.style.overflow = "hidden";
+    const focusFrame = window.requestAnimationFrame(() => modalCloseRef.current?.focus());
+    const handleModalKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setModal(null);
+        return;
+      }
+      if (event.key !== "Tab" || !modalRef.current) return;
+      const focusable = [...modalRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      )].filter((element) => !element.hasAttribute("disabled"));
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
+    window.addEventListener("keydown", handleModalKeys);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", handleModalKeys);
+      document.body.style.overflow = previousOverflow;
+      backgrounds.forEach((element) => {
+        element.inert = false;
+        element.removeAttribute("aria-hidden");
+      });
+      if (restoreModalFocusRef.current) lastFocusedRef.current?.focus({ preventScroll: true });
+    };
   }, [modal]);
 
   useEffect(() => {
     if (!mounted) return;
     window.scrollTo({ top: 0, behavior: "instant" });
   }, [mounted, screen]);
+
+  useEffect(() => {
+    if (!mounted || modal) return;
+    const focusFrame = window.requestAnimationFrame(() => {
+      if (screen === "game") promptRegionRef.current?.focus({ preventScroll: true });
+      if (screen === "results") resultsHeadingRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [game?.roundIndex, game?.status, modal, mounted, screen]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const checkForNewDay = () => {
+      const today = localDateKey();
+      if (today === dateKey) return;
+      const stored = normalizeGame(readJson<unknown>(`${GAME_KEY_PREFIX}${today}`, null));
+      setDateKey(today);
+      setDailyProgress(stored);
+      setGame(null);
+      setScreen("home");
+      setModal(null);
+      window.scrollTo({ top: 0, behavior: "instant" });
+    };
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const midnightTimer = window.setTimeout(checkForNewDay, nextMidnight.getTime() - now.getTime() + 250);
+    const checkWhenVisible = () => {
+      if (document.visibilityState === "visible") checkForNewDay();
+    };
+    window.addEventListener("focus", checkForNewDay);
+    document.addEventListener("visibilitychange", checkWhenVisible);
+    return () => {
+      window.clearTimeout(midnightTimer);
+      window.removeEventListener("focus", checkForNewDay);
+      document.removeEventListener("visibilitychange", checkWhenVisible);
+    };
+  }, [dateKey, mounted]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const syncStorage = (event: StorageEvent) => {
+      if (event.key === PROFILE_KEY && event.newValue) {
+        try {
+          setProfile(normalizeProfile(JSON.parse(event.newValue)));
+        } catch {
+          setProfile({ ...EMPTY_PROFILE });
+        }
+      }
+      if (event.key !== `${GAME_KEY_PREFIX}${dateKey}` || !event.newValue) return;
+      try {
+        const incoming = normalizeGame(JSON.parse(event.newValue));
+        if (!incoming) return;
+        setDailyProgress((current) => (!current || incoming.updatedAt > current.updatedAt ? incoming : current));
+        setGame((current) =>
+          current?.mode === "daily" && incoming.updatedAt > current.updatedAt ? incoming : current,
+        );
+      } catch {
+        // Ignore malformed updates from another tab.
+      }
+    };
+    window.addEventListener("storage", syncStorage);
+    return () => window.removeEventListener("storage", syncStorage);
+  }, [dateKey, mounted]);
+
+  const openModal = (kind: "how" | "packs") => {
+    lastFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    restoreModalFocusRef.current = true;
+    setModal(kind);
+  };
+
+  const closeModal = () => {
+    restoreModalFocusRef.current = true;
+    setModal(null);
+  };
 
   const toggleSound = () => {
     const next = !soundEnabled;
@@ -361,19 +538,47 @@ export default function Game() {
 
   const startDaily = () => {
     const next = dailyProgress ?? makeRun("daily", dateKey, puzzleNumber);
+    interactionLocked.current = false;
     setGame(next);
     setDailyProgress(next);
-    setScreen(next.status === "complete" || next.status === "lost" ? "results" : "game");
+    const hasUnseenFinalReveal =
+      (next.status === "complete" || next.status === "lost") &&
+      Boolean(next.feedback) &&
+      !next.feedbackAcknowledged;
+    setScreen(next.status === "complete" || next.status === "lost" ? (hasUnseenFinalReveal ? "game" : "results") : "game");
   };
 
   const startPractice = (packId: string) => {
     const next = makeRun("practice", dateKey, puzzleNumber, packId, currentTimestamp());
+    interactionLocked.current = false;
+    restoreModalFocusRef.current = false;
     setGame(next);
     setModal(null);
     setScreen("game");
   };
 
+  const finishForFun = () => {
+    if (!game || game.mode !== "daily" || game.status !== "lost") return;
+    const now = currentTimestamp();
+    interactionLocked.current = false;
+    setGame({
+      ...game,
+      mode: "practice",
+      packId: "daily-afterparty",
+      status: "playing",
+      feedback: undefined,
+      feedbackAcknowledged: true,
+      afterparty: true,
+      lives: 2,
+      startedAt: now,
+      endedAt: undefined,
+      updatedAt: now,
+    });
+    setScreen("game");
+  };
+
   const goHome = () => {
+    interactionLocked.current = false;
     setScreen("home");
     setGame(null);
     setShareLabel("Copy result");
@@ -398,13 +603,14 @@ export default function Game() {
     const nextTimeline = [...game.timeline];
     nextTimeline.splice(actualIndex, 0, event.id);
     const nextOutcomes: Outcome[] = [...game.outcomes, correct ? "correct" : "wrong"];
-    const nextLives = Math.max(0, game.lives - (correct ? 0 : 1));
+    const nextLives = game.afterparty ? game.lives : Math.max(0, game.lives - (correct ? 0 : 1));
     const finishedAll = game.roundIndex + 1 >= game.queue.length;
-    const nextStatus: GameStatus = finishedAll
-      ? "complete"
-      : nextLives === 0
-        ? "lost"
+    const nextStatus: GameStatus = !game.afterparty && nextLives === 0
+      ? "lost"
+      : finishedAll
+        ? "complete"
         : "feedback";
+    const updatedAt = currentTimestamp();
     let nextGame: GameState = {
       ...game,
       timeline: nextTimeline,
@@ -419,7 +625,9 @@ export default function Game() {
         selectedIndex,
         actualIndex,
       },
-      endedAt: nextStatus === "complete" || nextStatus === "lost" ? currentTimestamp() : undefined,
+      endedAt: nextStatus === "complete" || nextStatus === "lost" ? updatedAt : undefined,
+      updatedAt,
+      feedbackAcknowledged: false,
     };
 
     if (game.mode === "daily" && (nextStatus === "complete" || nextStatus === "lost") && !game.streakApplied) {
@@ -433,6 +641,13 @@ export default function Game() {
     if (nextGame.mode === "daily") setDailyProgress(nextGame);
     playSound(correct ? (sameYear ? "same" : finishedAll ? "finish" : "correct") : "wrong");
     if (navigator.vibrate) navigator.vibrate(correct ? 25 : [45, 35, 45]);
+    if (!correct) {
+      window.setTimeout(() => {
+        const inserted = document.querySelector<HTMLElement>(`[data-testid="timeline-card-${event.id}"]`);
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        inserted?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "end" });
+      }, 80);
+    }
     window.setTimeout(() => {
       interactionLocked.current = false;
     }, 280);
@@ -440,14 +655,44 @@ export default function Game() {
 
   const continueAfterFeedback = () => {
     if (!game) return;
+    interactionLocked.current = false;
     if (game.status === "complete" || game.status === "lost") {
+      const acknowledged = { ...game, feedbackAcknowledged: true, updatedAt: currentTimestamp() };
+      setGame(acknowledged);
+      if (acknowledged.mode === "daily") setDailyProgress(acknowledged);
       setScreen("results");
-      if (game.status === "complete") playSound("finish");
       return;
     }
-    const nextGame = { ...game, status: "playing" as const, feedback: undefined };
+    const nextGame = {
+      ...game,
+      status: "playing" as const,
+      feedback: undefined,
+      updatedAt: currentTimestamp(),
+    };
     setGame(nextGame);
     if (nextGame.mode === "daily") setDailyProgress(nextGame);
+  };
+
+  const writeResult = async (result: string) => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(result);
+      return true;
+    } catch {
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const textarea = document.createElement("textarea");
+      textarea.value = result;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      textarea.style.pointerEvents = "none";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      textarea.remove();
+      active?.focus({ preventScroll: true });
+      return copied;
+    }
   };
 
   const copyResult = async () => {
@@ -456,32 +701,25 @@ export default function Game() {
     const result = [
       `WHEN? #${game.puzzleNumber}`,
       outcomeGrid(game.outcomes),
-      `${score}/${TOTAL_PLACEMENTS} · ${game.lives > 0 ? `❤️${game.lives}` : "💔"} · 🔥${profile.streak}`,
-      `${window.location.origin}/?challenge=daily`,
+      `${score}/${TOTAL_PLACEMENTS} · ${game.lives > 0 ? `❤️${game.lives}` : "💔"} · 🔥${currentVisibleStreak}`,
+      `${window.location.origin}/?challenge=${game.dateKey}&score=${score}`,
     ].join("\n");
-    try {
-      await navigator.clipboard.writeText(result);
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = result;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      textarea.remove();
-    }
-    setShareLabel("Copied!");
+    const copied = await writeResult(result);
+    setShareLabel(copied ? "Copied!" : "Couldn’t copy");
     window.setTimeout(() => setShareLabel("Copy result"), 1_800);
   };
 
   const shareResult = async () => {
     if (!game) return;
     const score = game.outcomes.filter((outcome) => outcome === "correct").length;
-    const text = `WHEN? #${game.puzzleNumber}\n${outcomeGrid(game.outcomes)}\n${score}/${TOTAL_PLACEMENTS} · 🔥${profile.streak}`;
+    const text = `WHEN? #${game.puzzleNumber}\n${outcomeGrid(game.outcomes)}\n${score}/${TOTAL_PLACEMENTS} · 🔥${currentVisibleStreak}`;
     if (navigator.share) {
       try {
-        await navigator.share({ title: "WHEN?", text, url: `${window.location.origin}/?challenge=daily` });
+        await navigator.share({
+          title: "WHEN?",
+          text,
+          url: `${window.location.origin}/?challenge=${game.dateKey}&score=${score}`,
+        });
         return;
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -500,13 +738,13 @@ export default function Game() {
   }
 
   const header = (
-    <header className="site-header">
+    <header className="site-header" data-app-background>
       <button className="brand-button" onClick={goHome} aria-label="WHEN? home">
         <span className="brand-word">WHEN?</span>
         <span className="brand-dot" aria-hidden="true" />
       </button>
       <div className="header-actions">
-        <button className="icon-button" onClick={() => setModal("how")} aria-label="How to play">
+        <button className="icon-button" onClick={() => openModal("how")} aria-label="How to play">
           ?
         </button>
         <button
@@ -515,7 +753,7 @@ export default function Game() {
           aria-label={soundEnabled ? "Turn sound off" : "Turn sound on"}
           aria-pressed={soundEnabled}
         >
-          {soundEnabled ? "♪" : "×"}
+          {soundEnabled ? "♪" : "♪̸"}
         </button>
       </div>
     </header>
@@ -525,11 +763,20 @@ export default function Game() {
 
   if (screen === "home") {
     const dailyDone = dailyProgress?.status === "complete" || dailyProgress?.status === "lost";
+    const finalRevealWaiting = dailyDone && Boolean(dailyProgress?.feedback) && !dailyProgress?.feedbackAcknowledged;
     const dailyStarted = Boolean(dailyProgress);
     content = (
       <main className="home-page">
         <section className="hero-copy">
-          {challengeVisit && <div className="challenge-pill">A friend challenged you</div>}
+          {challengeDate && (
+            <div className="challenge-pill">
+              {challengeDate === dateKey
+                ? challengeScore === null
+                  ? "A friend challenged you"
+                  : `A friend scored ${challengeScore}/8. Beat it?`
+                : "That challenge has closed. Today’s puzzle is ready."}
+            </div>
+          )}
           <p className="eyebrow">THE DAILY TIMELINE GAME</p>
           <h1>
             History has <span>weird neighbors.</span>
@@ -542,7 +789,11 @@ export default function Game() {
         <section className="daily-card" aria-labelledby="daily-title">
           <div className="daily-card-topline">
             <span>DAILY #{puzzleNumber}</span>
-            <span className="streak-chip">{profile.streak > 0 ? `🔥 ${profile.streak} day streak` : "✦ New streak"}</span>
+            <span className="streak-chip">
+              {currentVisibleStreak > 0
+                ? `🔥 ${currentVisibleStreak}-day play streak`
+                : "✦ New streak"}
+            </span>
           </div>
           <div className="daily-illustration" aria-hidden="true">
             <span className="mini-card mini-one">1889</span>
@@ -551,18 +802,26 @@ export default function Game() {
             <span className="mini-line" />
             <span className="mini-card mini-three">2007</span>
           </div>
-          <h2 id="daily-title">
-            {dailyDone ? "Today’s timeline is in the books." : "Build today’s strange timeline."}
-          </h2>
-          <p>10 events · 8 placements · 2 lives</p>
-          <button className="primary-button" onClick={startDaily} data-testid="play-daily">
-            {dailyDone
-              ? "See today’s result"
-              : dailyStarted
-                ? `Continue round ${(dailyProgress?.roundIndex ?? 0) + 1}`
-                : "Play today’s game"}
-            <span aria-hidden="true">→</span>
-          </button>
+          <div className="daily-copy">
+            <h2 id="daily-title">
+              {finalRevealWaiting
+                ? "One last reveal is waiting."
+                : dailyDone
+                  ? "Today’s timeline is in the books."
+                  : "Build today’s strange timeline."}
+            </h2>
+            <p>10 events · 8 placements · 2 lives</p>
+            <button className="primary-button" onClick={startDaily} data-testid="play-daily">
+              {finalRevealWaiting
+                ? "See the final reveal"
+                : dailyDone
+                  ? "See today’s result"
+                  : dailyStarted
+                    ? `Continue round ${(dailyProgress?.roundIndex ?? 0) + 1}`
+                    : "Play today’s game"}
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
         </section>
 
         <section className="practice-strip">
@@ -570,7 +829,7 @@ export default function Game() {
             <p className="eyebrow">NO WAITING AROUND</p>
             <h2>One more timeline?</h2>
           </div>
-          <button className="secondary-button" onClick={() => setModal("packs")} data-testid="open-practice">
+          <button className="secondary-button" onClick={() => openModal("packs")} data-testid="open-practice">
             Choose practice pack <span aria-hidden="true">↗</span>
           </button>
         </section>
@@ -583,21 +842,46 @@ export default function Game() {
     const currentEvent = game.status === "playing" ? getEvent(game.queue[game.roundIndex]) : null;
     const revealedEvent = game.feedback ? getEvent(game.feedback.eventId) : null;
     const score = game.outcomes.filter((outcome) => outcome === "correct").length;
-    const packName = PRACTICE_PACKS.find((pack) => pack.id === game.packId)?.name ?? "Mixed bag";
+    const packName = game.afterparty
+      ? "Daily afterparty"
+      : PRACTICE_PACKS.find((pack) => pack.id === game.packId)?.name ?? "Mixed bag";
+    const timelineBeforeReveal = game.feedback
+      ? timelineEvents.filter((event) => event.id !== game.feedback?.eventId)
+      : timelineEvents;
+    const chosenGap = game.feedback
+      ? formatGap(timelineBeforeReveal, Math.min(game.feedback.selectedIndex, timelineBeforeReveal.length))
+      : "";
+    const correctGap = game.feedback
+      ? formatGap(timelineBeforeReveal, Math.min(game.feedback.actualIndex, timelineBeforeReveal.length))
+      : "";
     content = (
       <main className="game-page">
+        <h1 className="sr-only">
+          {game.mode === "daily" ? `WHEN? daily puzzle ${game.puzzleNumber}` : `${packName} timeline`}
+        </h1>
         <div className="game-statusbar">
           <button className="text-button" onClick={goHome}>← Exit</button>
           <div className="mode-label">
             {game.mode === "daily" ? `DAILY #${game.puzzleNumber}` : `PRACTICE · ${packName.toUpperCase()}`}
           </div>
-          <div className="lives" aria-label={`${game.lives} ${game.lives === 1 ? "life" : "lives"} remaining`}>
-            <span className={game.lives >= 1 ? "alive" : "lost"}>♥</span>
-            <span className={game.lives >= 2 ? "alive" : "lost"}>♥</span>
-          </div>
+          {game.afterparty ? (
+            <div className="for-fun-badge" aria-label="No lives in for-fun mode">∞ FOR FUN</div>
+          ) : (
+            <div className="lives" aria-label={`${game.lives} ${game.lives === 1 ? "life" : "lives"} remaining`}>
+              <span aria-hidden="true" className={game.lives >= 1 ? "alive" : "lost"}>♥</span>
+              <span aria-hidden="true" className={game.lives >= 2 ? "alive" : "lost"}>♥</span>
+            </div>
+          )}
         </div>
 
-        <div className="progress-track" aria-label={`Round ${Math.min(game.roundIndex + 1, TOTAL_PLACEMENTS)} of ${TOTAL_PLACEMENTS}`}>
+        <div
+          className="progress-track"
+          role="progressbar"
+          aria-label={`${game.roundIndex} of ${TOTAL_PLACEMENTS} events placed`}
+          aria-valuemin={0}
+          aria-valuemax={TOTAL_PLACEMENTS}
+          aria-valuenow={game.roundIndex}
+        >
           <span style={{ width: `${(game.roundIndex / TOTAL_PLACEMENTS) * 100}%` }} />
         </div>
 
@@ -606,6 +890,9 @@ export default function Game() {
             {currentEvent ? (
               <section
                 className={`prompt-card color-${currentEvent.color}`}
+                ref={promptRegionRef}
+                tabIndex={-1}
+                aria-labelledby="current-event-title"
                 data-testid="current-event"
                 data-event-id={currentEvent.id}
               >
@@ -614,14 +901,17 @@ export default function Game() {
                   <span className="event-emoji" aria-hidden="true">{currentEvent.emoji}</span>
                 </div>
                 <p className="prompt-kicker">WHEN DID THIS HAPPEN?</p>
-                <h2>{currentEvent.title}</h2>
+                <h2 id="current-event-title">{currentEvent.title}</h2>
                 <div className="hidden-year" aria-label="Year hidden">????</div>
                 <p className="prompt-help">Choose a gap in the timeline.</p>
               </section>
             ) : revealedEvent && game.feedback ? (
               <section
-                className={`feedback-card ${game.feedback.correct ? "is-correct" : "is-wrong"}`}
+                className={`feedback-card ${game.feedback.correct ? "is-correct" : "is-wrong has-comparison"}`}
+                ref={promptRegionRef}
+                tabIndex={-1}
                 aria-live="polite"
+                aria-labelledby="feedback-title"
                 data-testid="feedback-card"
               >
                 <Confetti active={game.feedback.correct} />
@@ -635,11 +925,25 @@ export default function Game() {
                       : "RIGHT ON THE LINE"
                     : "HERE’S WHERE IT LANDS"}
                 </p>
-                <h2>{game.feedback.correct ? (game.feedback.sameYear ? "Time twins!" : "Nailed it!") : "Not quite!"}</h2>
+                <h2 id="feedback-title">{game.feedback.correct ? (game.feedback.sameYear ? "Time twins!" : "Nailed it!") : "Not quite!"}</h2>
                 <div className="reveal-year">{formatYear(revealedEvent.year)}</div>
                 <h3>{revealedEvent.title}</h3>
                 <p className="reveal-fact">{revealedEvent.fact}</p>
-                <div className="score-note">{score} correct so far</div>
+                {game.feedback.correct ? (
+                  <div className="score-note">{score} correct so far</div>
+                ) : (
+                  <div className="mistake-feedback">
+                    <div><span>YOU CHOSE</span><strong>{chosenGap}</strong></div>
+                    <div><span>RIGHT SPOT</span><strong>{correctGap}</strong></div>
+                    <p>
+                      {game.afterparty
+                        ? "∞ Keep going—this round is just for fun."
+                        : game.lives === 1
+                          ? "♥ One life left."
+                          : "No lives left—see your official result."}
+                    </p>
+                  </div>
+                )}
                 <button className="primary-button dark" onClick={continueAfterFeedback} data-testid="continue-feedback">
                   {game.status === "complete" || game.status === "lost" ? "See my result" : "Next event"}
                   <span aria-hidden="true">→</span>
@@ -701,16 +1005,28 @@ export default function Game() {
   } else if (screen === "results" && game) {
     const score = game.outcomes.filter((outcome) => outcome === "correct").length;
     const won = game.status === "complete";
+    const perfect = won && score === TOTAL_PLACEMENTS;
     const elapsed = Math.max(1, Math.round(((game.endedAt ?? game.startedAt) - game.startedAt) / 1000));
+    const resultTimeline = game.timeline.map(getEvent);
+    const collisionIndex = resultTimeline.findIndex(
+      (event, index) => index > 0 && resultTimeline[index - 1].year === event.year,
+    );
+    const collision = collisionIndex > 0
+      ? [resultTimeline[collisionIndex - 1], resultTimeline[collisionIndex]]
+      : null;
     content = (
       <main className="results-page">
         <Confetti active={won} />
         <section className={`results-card ${won ? "won" : "ended"}`}>
-          <p className="eyebrow">{game.mode === "daily" ? `DAILY #${game.puzzleNumber}` : "PRACTICE COMPLETE"}</p>
+          <p className="eyebrow">{game.mode === "daily" ? `DAILY #${game.puzzleNumber}` : game.afterparty ? "TIMELINE AFTERPARTY" : "PRACTICE RESULT"}</p>
           <div className="result-stamp" aria-hidden="true">{won ? "✓" : "↻"}</div>
-          <h1>{won ? "Timeline complete!" : "History got you this time."}</h1>
+          <h1 ref={resultsHeadingRef} tabIndex={-1}>
+            {perfect ? "Perfect timeline!" : won ? "Timeline complete!" : "History got you this time."}
+          </h1>
           <p className="result-copy">
-            {won
+            {perfect
+              ? "Eight sharp placements. Ten wildly different moments. One flawless line."
+              : won
               ? "You put ten wildly different moments into one very satisfying line."
               : game.mode === "daily"
                 ? "Two slips end the official run—but now you know something delightfully strange."
@@ -729,25 +1045,50 @@ export default function Game() {
             ))}
           </div>
           <div className="result-stats">
-            <div><strong>🔥 {game.mode === "daily" ? profile.streak : "—"}</strong><span>day streak</span></div>
+            {game.mode === "daily" ? (
+              <div><strong>🔥 {currentVisibleStreak}</strong><span>play streak</span></div>
+            ) : (
+              <div>
+                <strong>{game.afterparty ? "∞" : `❤️ ${game.lives}`}</strong>
+                <span>{game.afterparty ? "for fun" : "lives left"}</span>
+              </div>
+            )}
             <div><strong>{game.timeline.length}/10</strong><span>events placed</span></div>
             <div><strong>{elapsed}s</strong><span>play time</span></div>
           </div>
+          {collision && (
+            <div className="collision-recap">
+              <span aria-hidden="true">✦</span>
+              <p>
+                <strong>Weird neighbors:</strong> {collision[0].title} and {collision[1].title} both landed in {collision[0].year}.
+              </p>
+            </div>
+          )}
           {game.mode === "daily" && (
             <div className="result-actions">
               <button className="primary-button" onClick={shareResult} data-testid="share-result">Share result <span>↗</span></button>
-              <button className="secondary-button" onClick={copyResult} data-testid="copy-result">{shareLabel}</button>
+              <button className="secondary-button" onClick={copyResult} data-testid="copy-result" aria-live="polite">{shareLabel}</button>
             </div>
           )}
         </section>
 
         <section className="after-card">
           <div>
-            <p className="eyebrow">KEEP TIME TRAVELLING</p>
-            <h2>{game.mode === "daily" ? "Try a themed timeline." : "Go again with a fresh set."}</h2>
+            <p className="eyebrow">{game.mode === "daily" && game.status === "lost" ? "NO FACTS LEFT BEHIND" : "KEEP TIME TRAVELLING"}</p>
+            <h2>
+              {game.mode === "daily" && game.status === "lost"
+                ? "Finish today’s timeline for fun."
+                : game.mode === "daily"
+                  ? "Try a themed timeline."
+                  : "Go again with a fresh set."}
+            </h2>
           </div>
           <div className="after-actions">
-            <button className="primary-button dark" onClick={() => setModal("packs")}>Play practice <span>→</span></button>
+            {game.mode === "daily" && game.status === "lost" ? (
+              <button className="primary-button dark" onClick={finishForFun} data-testid="finish-for-fun">Finish for fun <span aria-hidden="true">→</span></button>
+            ) : (
+              <button className="primary-button dark" onClick={() => openModal("packs")}>Play practice <span aria-hidden="true">→</span></button>
+            )}
             <button className="text-button" onClick={goHome}>Back home</button>
           </div>
         </section>
@@ -760,11 +1101,13 @@ export default function Game() {
   return (
     <div className="app-shell">
       {header}
-      {content}
+      <div className="page-content" data-app-background>
+        {content}
+      </div>
       {modal === "how" && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setModal(null)}>
-          <section className="modal-card how-modal" role="dialog" aria-modal="true" aria-labelledby="how-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="modal-close" onClick={() => setModal(null)} aria-label="Close how to play">×</button>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeModal}>
+          <section ref={modalRef} className="modal-card how-modal" role="dialog" aria-modal="true" aria-labelledby="how-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button ref={modalCloseRef} className="modal-close" onClick={closeModal} aria-label="Close how to play">×</button>
             <p className="eyebrow">HOW TO PLAY</p>
             <h2 id="how-title">Put the world in order.</h2>
             <div className="how-steps">
@@ -774,14 +1117,14 @@ export default function Game() {
             </div>
             <div className="same-year-note"><strong>✦ Same-year rule</strong><span>If two events share a year, either side counts. We’re curious, not cruel.</span></div>
             <p className="modal-footnote">Two mistakes end the run. The daily puzzle is the same for everyone on your calendar day.</p>
-            <button className="primary-button dark" onClick={() => setModal(null)}>Got it</button>
+            <button className="primary-button dark" onClick={closeModal}>Got it</button>
           </section>
         </div>
       )}
       {modal === "packs" && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setModal(null)}>
-          <section className="modal-card packs-modal" role="dialog" aria-modal="true" aria-labelledby="packs-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="modal-close" onClick={() => setModal(null)} aria-label="Close practice packs">×</button>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeModal}>
+          <section ref={modalRef} className="modal-card packs-modal" role="dialog" aria-modal="true" aria-labelledby="packs-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button ref={modalCloseRef} className="modal-close" onClick={closeModal} aria-label="Close practice packs">×</button>
             <p className="eyebrow">UNLIMITED PRACTICE</p>
             <h2 id="packs-title">Pick your flavor of time.</h2>
             <div className="pack-grid">
