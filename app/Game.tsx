@@ -1,6 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  dailyEvents,
+  dailyFactIndex,
+  dailySeed,
+  EXPANDED_SCHEDULE_START,
+  hasApproximateDateConflict,
+  hashString,
+  shuffled,
+} from "./daily-schedule";
 import { EVENTS, PRACTICE_PACKS, type EventItem } from "./events";
 
 type Outcome = "correct" | "wrong";
@@ -13,6 +22,7 @@ type Feedback = {
   sameYear: boolean;
   selectedIndex: number;
   actualIndex: number;
+  factIndex?: number;
 };
 
 type GameState = {
@@ -72,65 +82,6 @@ function dailyNumber(dateKey: string) {
   return Math.max(1, Math.floor((current - start) / 86_400_000) + 1);
 }
 
-function hashString(value: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function mulberry32(seed: number) {
-  return () => {
-    let value = (seed += 0x6d2b79f5);
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-function shuffled<T>(items: T[], seed: number) {
-  const random = mulberry32(seed);
-  const result = [...items];
-  for (let index = result.length - 1; index > 0; index -= 1) {
-    const target = Math.floor(random() * (index + 1));
-    [result[index], result[target]] = [result[target], result[index]];
-  }
-  return result;
-}
-
-function uniqueEvents(items: EventItem[]) {
-  return [...new Map(items.map((event) => [event.id, event])).values()];
-}
-
-function pickDailyEvents(seed: number) {
-  const eventsByYear = new Map<number, EventItem[]>();
-  EVENTS.forEach((event) => {
-    eventsByYear.set(event.year, [...(eventsByYear.get(event.year) ?? []), event]);
-  });
-  const sameYearGroups = [...eventsByYear.values()].filter((group) => group.length > 1);
-  const collision = shuffled(sameYearGroups, seed + 11)[0].slice(0, 2);
-  const selected: EventItem[] = [...collision];
-  const eras = [
-    EVENTS.filter((event) => event.year < 1850),
-    EVENTS.filter((event) => event.year >= 1850 && event.year < 1930),
-    EVENTS.filter((event) => event.year >= 1930 && event.year < 1970),
-    EVENTS.filter((event) => event.year >= 1970 && event.year < 1995),
-    EVENTS.filter((event) => event.year >= 1995),
-  ];
-  eras.forEach((era, index) => {
-    const available = shuffled(era, seed + 101 * (index + 1)).filter(
-      (event) => !selected.some((chosen) => chosen.id === event.id),
-    );
-    selected.push(...available.slice(0, index === 4 ? 2 : 1));
-  });
-  const fill = shuffled(EVENTS, seed + 909).filter(
-    (event) => !selected.some((chosen) => chosen.id === event.id),
-  );
-  return uniqueEvents([...selected, ...fill]).slice(0, 10);
-}
-
 function pickPracticeEvents(packId: string, seed: number) {
   const pack = PRACTICE_PACKS.find((item) => item.id === packId) ?? PRACTICE_PACKS[0];
   const allowed = new Set(pack.eventIds);
@@ -145,7 +96,12 @@ function pickPracticeEvents(packId: string, seed: number) {
   const rest = shuffled(fallbackPool, seed).filter(
     (event) => !collision.some((chosen) => chosen.id === event.id),
   );
-  return [...collision, ...rest].slice(0, 10);
+  const selected = [...collision];
+  for (const event of rest) {
+    if (!hasApproximateDateConflict(event, selected)) selected.push(event);
+    if (selected.length === 10) break;
+  }
+  return selected;
 }
 
 function makeRun(
@@ -155,9 +111,9 @@ function makeRun(
   packId = "mixed",
   practiceSeed = Date.now(),
 ): GameState {
-  const seed = mode === "daily" ? hashString(`when-${dateKey}`) : practiceSeed >>> 0;
+  const seed = mode === "daily" ? dailySeed(dateKey) : practiceSeed >>> 0;
   const selected =
-    mode === "daily" ? pickDailyEvents(seed) : pickPracticeEvents(packId, seed);
+    mode === "daily" ? dailyEvents(dateKey) : pickPracticeEvents(packId, seed);
   const anchorOrder = shuffled(selected, seed + 2_021);
   const firstAnchor = anchorOrder[0];
   const secondAnchor =
@@ -222,6 +178,14 @@ function normalizeGame(value: unknown): GameState | null {
     if (game.feedback.actualIndex < 0 || game.feedback.actualIndex > game.timeline.length - 1) return null;
     if (game.feedback.selectedIndex < 0 || game.feedback.selectedIndex > game.timeline.length - 1) return null;
     if (typeof game.feedback.correct !== "boolean" || typeof game.feedback.sameYear !== "boolean") return null;
+    if (
+      game.feedback.factIndex !== undefined &&
+      (!Number.isInteger(game.feedback.factIndex) ||
+        game.feedback.factIndex < 0 ||
+        game.feedback.factIndex >= eventFacts(getEvent(game.feedback.eventId)).length)
+    ) {
+      return null;
+    }
   }
 
   return {
@@ -297,8 +261,18 @@ function formatGap(timeline: EventItem[], index: number) {
   return `Between ${timeline[index - 1].title} and ${timeline[index].title}`;
 }
 
-function formatYear(year: number) {
-  return new Intl.NumberFormat("en-US", { useGrouping: false }).format(year);
+function formatYear(year: number, circa = false) {
+  const value = new Intl.NumberFormat("en-US", { useGrouping: false }).format(Math.abs(year));
+  const label = year < 0 ? `${value} BCE` : value;
+  return circa ? `c. ${label}` : label;
+}
+
+function eventFacts(event: EventItem) {
+  return [event.fact, ...(event.bonusFacts ?? [])];
+}
+
+function revealedFact(event: EventItem, feedback: Feedback) {
+  return eventFacts(event)[feedback.factIndex ?? 0];
 }
 
 function outcomeGrid(outcomes: Outcome[]) {
@@ -380,6 +354,7 @@ export default function Game() {
   const puzzleNumber = useMemo(() => dailyNumber(dateKey), [dateKey]);
   const playSound = useGameSound(soundEnabled);
   const currentVisibleStreak = visibleStreak(profile, dateKey);
+  const expandedDailyActive = dateKey >= EXPANDED_SCHEDULE_START;
 
   useEffect(() => {
     const hydration = window.setTimeout(() => {
@@ -611,6 +586,10 @@ export default function Game() {
         ? "complete"
         : "feedback";
     const updatedAt = currentTimestamp();
+    const facts = eventFacts(event);
+    const factIndex = game.mode === "daily"
+      ? dailyFactIndex(game.dateKey, event.id, facts.length)
+      : hashString(`fact|${game.startedAt}|${event.id}`) % facts.length;
     let nextGame: GameState = {
       ...game,
       timeline: nextTimeline,
@@ -624,6 +603,7 @@ export default function Game() {
         sameYear,
         selectedIndex,
         actualIndex,
+        factIndex,
       },
       endedAt: nextStatus === "complete" || nextStatus === "lost" ? updatedAt : undefined,
       updatedAt,
@@ -834,7 +814,11 @@ export default function Game() {
           </button>
         </section>
 
-        <p className="home-footnote">A new shared puzzle appears at midnight. No account needed.</p>
+        <p className="home-footnote">
+          {expandedDailyActive
+            ? `A new shared puzzle appears at midnight. ${EVENTS.length} moments · 60-day cooldown · no account.`
+            : `${EVENTS.length} moments join the daily rotation on 16 July. Practice them now · no account.`}
+        </p>
       </main>
     );
   } else if (screen === "game" && game) {
@@ -926,9 +910,9 @@ export default function Game() {
                     : "HERE’S WHERE IT LANDS"}
                 </p>
                 <h2 id="feedback-title">{game.feedback.correct ? (game.feedback.sameYear ? "Time twins!" : "Nailed it!") : "Not quite!"}</h2>
-                <div className="reveal-year">{formatYear(revealedEvent.year)}</div>
+                <div className="reveal-year">{formatYear(revealedEvent.year, revealedEvent.circa)}</div>
                 <h3>{revealedEvent.title}</h3>
-                <p className="reveal-fact">{revealedEvent.fact}</p>
+                <p className="reveal-fact">{revealedFact(revealedEvent, game.feedback)}</p>
                 {game.feedback.correct ? (
                   <div className="score-note">{score} correct so far</div>
                 ) : (
@@ -980,7 +964,7 @@ export default function Game() {
                       className={`timeline-card color-${event.color} ${isNew ? "is-new" : ""} ${isNew && !game.feedback?.correct ? "was-wrong" : ""}`}
                       data-testid={`timeline-card-${event.id}`}
                     >
-                      <span className="timeline-year">{formatYear(event.year)}</span>
+                      <span className="timeline-year">{formatYear(event.year, event.circa)}</span>
                       <span className="timeline-emoji" aria-hidden="true">{event.emoji}</span>
                       <span className="timeline-title">{event.title}</span>
                     </article>
@@ -1060,7 +1044,7 @@ export default function Game() {
             <div className="collision-recap">
               <span aria-hidden="true">✦</span>
               <p>
-                <strong>Weird neighbors:</strong> {collision[0].title} and {collision[1].title} both landed in {collision[0].year}.
+                <strong>Weird neighbors:</strong> {collision[0].title} and {collision[1].title} both landed in {formatYear(collision[0].year, collision[0].circa || collision[1].circa)}.
               </p>
             </div>
           )}
@@ -1116,7 +1100,10 @@ export default function Game() {
               <div><span>3</span><p><strong>Grow the line.</strong> Every answer stays, so each choice gets tighter.</p></div>
             </div>
             <div className="same-year-note"><strong>✦ Same-year rule</strong><span>If two events share a year, either side counts. We’re curious, not cruel.</span></div>
-            <p className="modal-footnote">Two mistakes end the run. The daily puzzle is the same for everyone on your calendar day.</p>
+            <p className="modal-footnote">
+              Two mistakes end the run. Everyone gets the same daily puzzle
+              {expandedDailyActive ? ", with a 60-day event cooldown." : "; the expanded cooldown begins on 16 July."}
+            </p>
             <button className="primary-button dark" onClick={closeModal}>Got it</button>
           </section>
         </div>
@@ -1133,7 +1120,7 @@ export default function Game() {
                   <span className="pack-emoji" aria-hidden="true">{pack.emoji}</span>
                   <strong>{pack.name}</strong>
                   <span>{pack.description}</span>
-                  <em>Play now →</em>
+                  <em>{pack.eventIds.length || EVENTS.length} moments · Play now →</em>
                 </button>
               ))}
             </div>

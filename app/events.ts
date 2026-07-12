@@ -1,19 +1,13 @@
-export type EventCategory = "tech" | "culture" | "discovery" | "world";
+import { EXPANDED_1850_1949 } from "./event-data/expanded-1850-1949";
+import { EXPANDED_1950_NOW } from "./event-data/expanded-1950-now";
+import { EXPANDED_PRE_1850 } from "./event-data/expanded-pre1850";
+import { CORE_BONUS_FACTS } from "./event-data/core-bonus-facts";
+import type { EventCategory, EventColor, EventItem } from "./event-data/types";
 
-export type EventColor = "coral" | "sun" | "mint" | "sky" | "lilac";
-
-export type EventItem = {
-  id: string;
-  title: string;
-  year: number;
-  category: EventCategory;
-  emoji: string;
-  color: EventColor;
-  fact: string;
-};
+export type { EventCategory, EventColor, EventItem } from "./event-data/types";
 
 export type PracticePack = {
-  id: "mixed" | "tech" | "culture" | "discovery";
+  id: "mixed" | "tech" | "culture" | "discovery" | "world";
   name: string;
   description: string;
   emoji: string;
@@ -22,10 +16,10 @@ export type PracticePack = {
   eventIds: readonly string[];
 };
 
-export const EVENTS: EventItem[] = [
+export const CORE_EVENTS: EventItem[] = [
   {
     id: "oxford-teaching",
-    title: "Teaching begins at Oxford",
+    title: "Teaching is documented at Oxford",
     year: 1096,
     category: "culture",
     emoji: "🎓",
@@ -552,7 +546,7 @@ export const EVENTS: EventItem[] = [
     category: "discovery",
     emoji: "⚱️",
     color: "mint",
-    fact: "A water boy reportedly found the step that led archaeologists to the nearly intact royal tomb.",
+    fact: "An Egyptian excavation team uncovered the first step; one later account credits young water carrier Hussein Abdel-Rassoul.",
   },
   {
     id: "great-gatsby",
@@ -1393,6 +1387,16 @@ export const EVENTS: EventItem[] = [
   },
 ] satisfies EventItem[];
 
+export const EVENTS: EventItem[] = [
+  ...CORE_EVENTS.map((event) => ({
+    ...event,
+    bonusFacts: CORE_BONUS_FACTS[event.id] ?? event.bonusFacts,
+  })),
+  ...EXPANDED_PRE_1850,
+  ...EXPANDED_1850_1949,
+  ...EXPANDED_1950_NOW,
+];
+
 export const PRACTICE_PACKS: PracticePack[] = [
   {
     id: "mixed",
@@ -1429,5 +1433,14 @@ export const PRACTICE_PACKS: PracticePack[] = [
     color: "mint",
     categories: ["discovery"],
     eventIds: EVENTS.filter((event) => event.category === "discovery").map((event) => event.id),
+  },
+  {
+    id: "world",
+    name: "World Turning",
+    description: "Empires rise, borders move, rights expand, and ordinary lives reshape the map.",
+    emoji: "🌍",
+    color: "coral",
+    categories: ["world"],
+    eventIds: EVENTS.filter((event) => event.category === "world").map((event) => event.id),
   },
 ] satisfies PracticePack[];
