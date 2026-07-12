@@ -96,6 +96,7 @@ button:disabled {
 
 .brand-button {
   display: flex;
+  min-height: 44px;
   align-items: center;
   gap: 7px;
   padding: 0;
@@ -686,6 +687,12 @@ button:disabled {
 
 .feedback-card .primary-button {
   width: 100%;
+}
+
+.prompt-card:focus,
+.feedback-card:focus,
+.results-card h1:focus {
+  outline: none;
 }
 
 .timeline-panel {
